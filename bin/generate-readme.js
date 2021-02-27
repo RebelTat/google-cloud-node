@@ -69,7 +69,8 @@ async function downloadRepoMetadata () {
  * Write the resulting file to disk.
  */
 async function processMetadata(repoMetadata) {
-  const libraries = [];
+  const gaLibraries = [];
+  const previewLibraries = [];
 
   // filter libraries to only contain those with Google Cloud api_id,
   // standardizing naming along the way.
@@ -79,6 +80,8 @@ async function processMetadata(repoMetadata) {
     if (!metadata.api_id) {
       continue;
     }
+
+    metadata.release_level = (metadata.release_level || '').toLowerCase();
 
     // making naming more consistent, sometimes we've appended Cloud,
     // sometimes Google Cloud.
@@ -116,12 +119,19 @@ async function processMetadata(repoMetadata) {
       metadata.support_documentation = supportDocsUrl;
     }
 
-    libraries.push(metadata);
+    if (metadata.release_level === 'ga') {
+      gaLibraries.push(metadata);
+    } else {
+      previewLibraries.push(metadata);
+    }
   }
 
-  libraries.sort((a, b) => {
-    return a.name_pretty.localeCompare(b.name_pretty);
+  [gaLibraries, previewLibraries].forEach(libraries => {
+    libraries.sort((a, b) => {
+      return a.name_pretty.localeCompare(b.name_pretty);
+    });
   });
+  const libraries = [...gaLibraries, ...previewLibraries];
   writeFileSync('./libraries.json', JSON.stringify(libraries, null, 2), 'utf8');
   return libraries;
 }
@@ -134,7 +144,7 @@ async function generateReadme (libraries) {
   let partial = '';
   for (const lib of libraries) {
     let stability = '';
-    switch(lib.release_level.toLowerCase()) {
+    switch(lib.release_level) {
       case 'ga':
         stability = '[![GA][ga-stability]][launch-stages]';
         break;
@@ -186,7 +196,7 @@ async function main () {
   if (args.includes('--use-cache')) {
     libraries = JSON.parse(readFileSync('./libraries.json', 'utf8'));
   } else {
-    libraries = await downloadRepoMetadata(repos);
+    libraries = await downloadRepoMetadata();
   }
   await generateReadme(libraries);
 }
