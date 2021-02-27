@@ -35,7 +35,14 @@ function checkpoint (message, success = true) {
   console.info(`${prefix} ${message}`);
 }
 
-async function collectRepoMetadata (repos) {
+/**
+ * For each JavaScript or TypeScript repository in the `googleapis`
+ * org, attempt to download the `.repo-metadata.json` file if present.
+ * Write the combined metadata to `libraries.json` in this repository.
+ */
+async function downloadRepoMetadata () {
+  const repos = await getRepos();
+  checkpoint(`Discovered ${repos.length} node.js repos with metadata`);
   const repoMetadata = {};
   for (const repo of repos) {
     try {
@@ -52,14 +59,16 @@ async function collectRepoMetadata (repos) {
       checkpoint(`${repo} had no .repo-metadata.json`, false);
     }
   }
-  return repoMetadata;
+  const libraries = await processMetadata(repoMetadata);
+  return libraries;
 }
 
-// Fills in README.mustache with contents loaded from sloth/repos.json.
-// Given the simplicity of the template, we do not actually use a templating
-// engine, instead calling string.replace.
-async function generateReadme (repoMetadata) {
-  const template = readFileSync('./bin/README.mustache', 'utf8');
+/**
+ * Filter the aggregated repo metadata to only include cloud
+ * APIs, and to use the appropriate product support url.
+ * Write the resulting file to disk.
+ */
+async function processMetadata(repoMetadata) {
   const libraries = [];
 
   // filter libraries to only contain those with Google Cloud api_id,
@@ -114,15 +123,36 @@ async function generateReadme (repoMetadata) {
     return a.name_pretty.localeCompare(b.name_pretty);
   });
   writeFileSync('./libraries.json', JSON.stringify(libraries, null, 2), 'utf8');
+  return libraries;
+}
 
+// Fills in README.mustache with contents loaded from sloth/repos.json.
+// Given the simplicity of the template, we do not actually use a templating
+// engine, instead calling string.replace.
+async function generateReadme (libraries) {
+  const template = readFileSync('./bin/README.mustache', 'utf8');
   let partial = '';
-  libraries.forEach((lib) => {
-    partial += `| [${lib.name_pretty}](https://github.com/${lib.repo}) | [:notebook:](${lib.client_documentation}) | \`npm i ${lib.distribution_name}\` | [enable](https://console.cloud.google.com/flows/enableapi?apiid=${lib.api_id}) | ${lib.requires_billing ? figures.cross : figures.tick} |\n`;
-  });
-
+  for (const lib of libraries) {
+    let stability = '';
+    switch(lib.release_level.toLowerCase()) {
+      case 'ga':
+        stability = '[![GA][ga-stability]][launch-stages]';
+        break;
+      case 'beta':
+      case 'alpha':
+        stability = '[![Preview][preview-stability]][launch-stages]';
+        break;
+    }
+    const npmBadge = `[![npm](https://img.shields.io/npm/v/${lib.distribution_name})](https://npm.im/${lib.distribution_name})`;
+    partial += `| [${lib.name_pretty}](https://github.com/${lib.repo}) | ${stability} | ${npmBadge} |\n`;
+  }
   writeFileSync('./README.md', template.replace('{{libraries}}', partial), 'utf8');
 }
 
+/**
+ * Use the GitHub Search API to find all JavaScript and TypeScript repositories
+ * in the `googleapis` GitHub organization.
+ */
 async function getRepos () {
   let url = new URL('/orgs/googleapis/repos', baseUrl);
   url.searchParams.set('type', 'public');
@@ -139,14 +169,25 @@ async function getRepos () {
       }
     }
   }
-  console.log(repos);
   return repos;
 }
 
+/**
+ * Search for all Node.js and TypeScript repos in the `googelapis` org,
+ * download all repo metadata, and make it fit for use.  Save the file to
+ * libraries.json, and then use the results to generate a README.
+ *
+ * If the `--use-cache` flag is passed, skip the downloading of all metadata
+ * and just regenerate the README using the local `libraries.json`.
+ */
 async function main () {
-  const repos = await getRepos();
-  checkpoint(`Discovered ${repos.length} node.js repos with metadata`);
-  const repoMetadata = await collectRepoMetadata(repos);
-  await generateReadme(repoMetadata);
+  const args = process.argv.slice(2);
+  let libraries = [];
+  if (args.includes('--use-cache')) {
+    libraries = JSON.parse(readFileSync('./libraries.json', 'utf8'));
+  } else {
+    libraries = await downloadRepoMetadata(repos);
+  }
+  await generateReadme(libraries);
 }
 main().catch(console.error);
